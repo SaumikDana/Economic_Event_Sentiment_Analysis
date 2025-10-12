@@ -24,7 +24,7 @@ from bs4 import BeautifulSoup
 
 # NLP and ML
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.preprocessing import normalize
+from sklearn.preprocessing import normalize, StandardScaler
 
 # XML parsing
 import xml.etree.ElementTree as ET
