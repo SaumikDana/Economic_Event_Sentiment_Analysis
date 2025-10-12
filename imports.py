@@ -28,3 +28,11 @@ from sklearn.preprocessing import normalize
 
 # XML parsing
 import xml.etree.ElementTree as ET
+
+
+import requests
+from bs4 import BeautifulSoup
+from transformers import BertTokenizer, BertForSequenceClassification, pipeline
+from sklearn.feature_extraction.text import TfidfVectorizer
+import xml.etree.ElementTree as ET
+from urllib.parse import urljoin
