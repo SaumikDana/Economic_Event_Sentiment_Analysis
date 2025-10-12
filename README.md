@@ -104,7 +104,24 @@ Extracts and analyzes sentiment from corporate SEC 8-K filings (material event d
 - Date-range filtering for temporal analysis
 - Sentiment classification: positive/negative/neutral events
 
-**Applications:** Corporate event analysis, M&A sentiment, earnings impact assessment
+**Sample Output:**
+
+![Apple 8-K Sentiment Classification](examples/apple_8k_sentiment_classification.png)
+*Apple Inc. 8-K filing sentiment (2015-2024) - 96 filings analyzed*
+
+![Apple 8-K Sentiment Score](examples/apple_8k_sentiment_score.png)
+*Continuous sentiment scores tracking corporate event sentiment over time*
+
+**Key Insights from Visualization:**
+- **2015-2016 Volatility:** High variance in sentiment during iPhone 6S/7 era with mixed product reception
+- **2017-2018 Positive Cluster:** Strong positive sentiment during iPhone X launch and services growth narrative
+- **2019 Stabilization:** More balanced sentiment as company matured and diversified beyond iPhone
+- **2020-2021 Mixed Signals:** COVID impact visible with scattered negative events alongside resilient product launches
+- **2022-2024 Normalization:** Return to predominantly positive/neutral sentiment with mature product cycles
+- **Overall Distribution:** 53% positive, 33% negative, 14% neutral - reflects Apple's generally strong corporate trajectory
+- **Event Detection:** Successfully captures material events like earnings beats (positive spikes) vs. supply chain issues (negative spikes)
+
+**Applications:** Corporate event analysis, M&A sentiment, earnings impact assessment, material event tracking
 
 **Corporate Sentiment Lexicon Examples:**
 - Positive: growth, acquisition, synergies, breakthrough, market share, dividend
