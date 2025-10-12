@@ -192,8 +192,3 @@ Analysis of material corporate events via 8-K filings:
 - Negative: restructurings, regulatory issues, executive departures
 
 ---
-
-## Setup & Usage
-
-### Installation
-```bash
