@@ -135,7 +135,7 @@ def run_fomc_monetary_analysis(first_date, last_date, plot=False):
     """Main function using your existing release dates"""
 
     script_directory = os.path.dirname(os.path.abspath(__file__))
-    data_directory = os.path.join(script_directory, '..', 'data')
+    data_directory = os.path.join(script_directory, 'data')
     release_file = os.path.join(data_directory, 'economic_calendar_010112_123124.csv')
     event = 'fomc_upper'
     release_dates = get_release_dates(release_file, first_date, last_date, event)
