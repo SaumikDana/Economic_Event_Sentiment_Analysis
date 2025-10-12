@@ -146,6 +146,23 @@ Classifies U.S. Treasury press releases as expansionary vs. contractionary fisca
 - Embedding-based semantic analysis
 - Handles multiple URL patterns and website structure changes
 
+**Sample Output:**
+
+![Treasury Sentiment Classification](examples/treasury_sentiment_classification.png)
+*Treasury fiscal policy sentiment (2014-2025) - 237 press releases analyzed across three Treasury Secretaries*
+
+![Treasury Sentiment Score](examples/treasury_sentiment_score.png)
+*Continuous sentiment scores with threshold bands showing fiscal policy evolution*
+
+**Key Insights from Visualization:**
+- **2014-2019 Pre-Pandemic:** Predominantly expansionary rhetoric (green cluster at top) during economic recovery period under Lew and Mnuchin
+- **2020 COVID Response:** Massive spike in expansionary sentiment (score ~3.0) during CARES Act and pandemic relief measures - the highest in the entire dataset
+- **2021-2022 Infrastructure Era:** Continued high expansionary sentiment under Yellen with American Rescue Plan and Infrastructure Investment
+- **Recent Moderation:** 2023-2024 shows more balanced sentiment as focus shifts to debt management and fiscal sustainability
+- **Threshold Sensitivity:** The ±0.25 threshold bands (dashed lines) effectively separate policy regimes - most signals fall clearly above/below
+- **Policy Continuity:** Despite three different Treasury Secretaries (Lew, Mnuchin, Yellen), expansionary language dominates across administrations
+- **Fiscal Cycle Detection:** Clear clustering of contractionary language (bottom, red) during budget negotiation periods
+
 **Applications:** Fiscal policy tracking, government spending analysis, economic policy stance detection
 
 **Fiscal Policy Lexicon Examples:**
