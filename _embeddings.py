@@ -1,6 +1,8 @@
 from sentence_transformers import SentenceTransformer
 import numpy as np
 from sklearn.preprocessing import StandardScaler
+import re
+from sklearn.metrics.pairwise import cosine_similarity
 
 
 def calculate_sentiment_scores(document_embeddings, axis):
@@ -72,3 +74,183 @@ def create_policy_axis(model, expansionary_examples, contractionary_examples):
         raise ValueError("Policy axis has zero norm - examples may be identical")
     
     return axis
+
+
+def normalize_text_for_dedupe(text: str) -> str:
+    """Cheap normalization to catch exact/near-exact duplicates."""
+    text = text.lower().strip()
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"[“”]", '"', text)
+    text = re.sub(r"[‘’]", "'", text)
+    return text
+
+
+def prune_semantic_redundancy(
+    texts,
+    model,
+    similarity_threshold=0.92,
+    max_examples=None,
+):
+    """
+    Removes semantically redundant texts using embedding cosine similarity.
+    Keeps the first occurrence of each "cluster".
+    """
+    if not texts:
+        return []
+
+    # Fast exact-ish dedupe first
+    seen = set()
+    unique = []
+    for t in texts:
+        nt = normalize_text_for_dedupe(t)
+        if nt not in seen and len(nt) > 20:
+            seen.add(nt)
+            unique.append(t)
+
+    if len(unique) <= 1:
+        return unique
+
+    embs = model.encode(unique, convert_to_numpy=True, show_progress_bar=False)
+    kept_texts = []
+    kept_embs = []
+
+    for t, e in zip(unique, embs):
+        if not kept_embs:
+            kept_texts.append(t)
+            kept_embs.append(e)
+            continue
+
+        sims = cosine_similarity([e], np.vstack(kept_embs))[0]
+        if np.max(sims) < similarity_threshold:
+            kept_texts.append(t)
+            kept_embs.append(e)
+
+        if max_examples is not None and len(kept_texts) >= max_examples:
+            break
+
+    return kept_texts
+
+
+def integrate_new_labeled_examples(
+    labeled_examples,
+    new_text,
+    stance,
+    model,
+    similarity_threshold=0.92,
+    max_per_class=200,
+):
+    """
+    Adds a new statement into labeled_examples[stance] (expansionary/contractionary),
+    then prunes redundancy.
+    """
+    if stance not in ("expansionary", "contractionary"):
+        return labeled_examples  # ignore neutral / unknown
+
+    if not isinstance(new_text, str) or len(new_text.strip()) < 50:
+        return labeled_examples
+
+    labeled_examples.setdefault("expansionary", [])
+    labeled_examples.setdefault("contractionary", [])
+
+    # Append then prune
+    labeled_examples[stance].append(new_text)
+
+    labeled_examples[stance] = prune_semantic_redundancy(
+        labeled_examples[stance],
+        model=model,
+        similarity_threshold=similarity_threshold,
+        max_examples=max_per_class,
+    )
+
+    return labeled_examples
+
+
+import requests
+from bs4 import BeautifulSoup
+
+def extract_clean_text(soup):
+    """Extract clean text from Treasury page"""
+    
+    category = ""
+    category_elem = soup.select_one('.news-category')
+    if category_elem:
+        category = category_elem.get_text().strip()
+    
+    title = ""
+    title_elem = soup.select_one('h2.uswds-page-title span')
+    if title_elem:
+        title = title_elem.get_text().strip()
+    
+    date = ""
+    date_elem = soup.select_one('.field--name-field-news-publication-date time')
+    if date_elem:
+        date = date_elem.get_text().strip()
+    
+    body_text = ""
+    body_elem = soup.select_one('.field--name-field-news-body')
+    if body_elem:
+        paragraphs = []
+        for p in body_elem.find_all('p'):
+            text = p.get_text().strip()
+            if text:
+                paragraphs.append(text)
+        body_text = '\n\n'.join(paragraphs)
+    
+    full_text_parts = []
+    if category:
+        full_text_parts.append(category)
+    if title:
+        full_text_parts.append(title)
+    if date:
+        full_text_parts.append(date)
+    if body_text:
+        full_text_parts.append(body_text)
+    
+    return '\n'.join(full_text_parts)
+
+
+def extract_text(url, headers):
+    response = requests.get(url, headers=headers)
+    if response.status_code != 200:
+        return None
+    soup = BeautifulSoup(response.content, 'html.parser')
+    return extract_clean_text(soup)
+
+
+def scrape_text(prefix, num):
+    """Scrape Treasury press release"""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+
+    base_url = "https://home.treasury.gov/news/press-releases/"
+    alt_base_url = "https://home.treasury.gov/news/press-release/"
+
+    url = f"{base_url}{prefix}{num:04d}"
+    text_content = extract_text(url, headers)
+
+    if not text_content:
+        url = f"{alt_base_url}{prefix}{num:04d}"
+        text_content = extract_text(url, headers)
+
+    if not text_content and len(str(abs(num))) == 3:
+        url = f"{base_url}{prefix}{num:03d}"
+        text_content = extract_text(url, headers)
+        if not text_content:
+            url = f"{alt_base_url}{prefix}{num:03d}"
+            text_content = extract_text(url, headers)
+
+    if not text_content:
+        return None, None
+
+    release_date = re.search(r'(\b\w+\s+\d{1,2},\s+\d{4})(?=\s*\(Archived Content\))', text_content)
+    if not release_date:
+        early_text = text_content[:1000]
+        release_date = re.search(r'(\b\w+\s+\d{1,2},\s+\d{4})', early_text)
+
+    release_date = release_date.group(1) if release_date else None
+    if release_date is None:
+        return None, None
+
+    return text_content, release_date
+

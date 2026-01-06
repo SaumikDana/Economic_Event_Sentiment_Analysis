@@ -1,14 +1,13 @@
 import pandas as pd
 import matplotlib.pyplot as plt
-import requests
-from bs4 import BeautifulSoup
-import re
 import traceback
 
 from _embeddings import (
     create_document_embeddings, 
     calculate_sentiment_scores,
-    create_policy_axis
+    create_policy_axis,
+    integrate_new_labeled_examples,
+    scrape_text
 )
 
 
@@ -64,7 +63,7 @@ def get_stance_label(score, threshold=0.25):
         return 'neutral'
 
 
-def analyze_treasury_statements(statements_df, labeled_examples, threshold=0.25):
+def analyze_treasury_statements(statements_df, labeled_examples, threshold=0.25, learn=True):
     """Treasury fiscal sentiment analysis using labeled examples
     
     Args:
@@ -101,48 +100,91 @@ def analyze_treasury_statements(statements_df, labeled_examples, threshold=0.25)
         print("❌ No valid text content found")
         return pd.DataFrame()
     
+
     try:
-        # Create embeddings
+        # 1) Embed docs ONCE
+        print(f'Embed Docs ...')
         document_embeddings, model, processed_texts = create_document_embeddings(texts)
-        
-        # Create policy axis from YOUR labeled examples
+
+        # 2) Build initial axis from current labeled examples
+        print(f'Build Axis ...')
         axis = create_policy_axis(
             model,
             labeled_examples['expansionary'],
             labeled_examples['contractionary']
         )
-        
-        # Calculate scores
-        scores = calculate_sentiment_scores(document_embeddings, axis)
-        
-        # Create results
+
+        # 3) First scoring pass
+        print(f'Get Scores ...')
+        scores_v1 = calculate_sentiment_scores(document_embeddings, axis)
+
+        # 4) First pass results + learning
         results = []
-        for i in range(min(len(scores), len(valid_indices))):
+        learned_any = False
+
+        for i in range(min(len(scores_v1), len(valid_indices))):
             valid_idx = valid_indices[i]
-            
             if valid_idx >= len(statements_df):
                 continue
-                
+
             row = statements_df.iloc[valid_idx]
-            score = scores[i]
+            score = float(scores_v1[i])
             stance = get_stance_label(score, threshold=threshold)
             date = row.get('date')
+            text = row.get('statement_text', '')
 
+            # Learn from confident non-neutral
+            if learn and stance in ("expansionary", "contractionary"):
+                before = len(labeled_examples[stance])
+                print(f'Update labeled examples {date}...')
+                labeled_examples = integrate_new_labeled_examples(
+                    labeled_examples=labeled_examples,
+                    new_text=text,
+                    stance=stance,
+                    model=model,
+                )
+                after = len(labeled_examples[stance])
+                if after != before:
+                    learned_any = True
+
+            # store v1 temporarily (will be overwritten if we do pass 2)
             results.append({
-                'date': date, 
-                'sentiment_score': score, 
+                'date': date,
+                'sentiment_score': score,
                 'stance': stance
             })
-        
+
+        # 5) If learning changed the example bank, rebuild axis ONCE and rescore
+        if learn and learned_any:
+            print(f'Update axis...')
+            axis = create_policy_axis(
+                model,
+                labeled_examples['expansionary'],
+                labeled_examples['contractionary']
+            )
+            scores_v2 = calculate_sentiment_scores(document_embeddings, axis)
+
+            # overwrite scores/stances with v2 using same ordering
+            for j in range(min(len(scores_v2), len(results))):
+                score2 = float(scores_v2[j])
+                stance2 = get_stance_label(score2, threshold=threshold)
+                results[j]['sentiment_score'] = score2
+                results[j]['stance'] = stance2
+
         results_df = pd.DataFrame(results)
-        
+
         print(f"\n✓ Analysis complete:")
         print(f"  Expansionary: {(results_df['stance'] == 'expansionary').sum()}")
         print(f"  Neutral: {(results_df['stance'] == 'neutral').sum()}")
         print(f"  Contractionary: {(results_df['stance'] == 'contractionary').sum()}")
-                
+
+        if learn:
+            print("\n✓ Updated labeled_examples (after pruning):")
+            print(f"  expansionary: {len(labeled_examples.get('expansionary', []))}")
+            print(f"  contractionary: {len(labeled_examples.get('contractionary', []))}")
+
         return results_df
-        
+
     except Exception as e:
         print(f"❌ Analysis failed: {e}")
         traceback.print_exc()
@@ -168,103 +210,12 @@ def analyze_all_statements(statements_df, labeled_examples, threshold=0.25, plot
     return results_df
 
 
-def extract_clean_text(soup):
-    """Extract clean text from Treasury page"""
-    
-    category = ""
-    category_elem = soup.select_one('.news-category')
-    if category_elem:
-        category = category_elem.get_text().strip()
-    
-    title = ""
-    title_elem = soup.select_one('h2.uswds-page-title span')
-    if title_elem:
-        title = title_elem.get_text().strip()
-    
-    date = ""
-    date_elem = soup.select_one('.field--name-field-news-publication-date time')
-    if date_elem:
-        date = date_elem.get_text().strip()
-    
-    body_text = ""
-    body_elem = soup.select_one('.field--name-field-news-body')
-    if body_elem:
-        paragraphs = []
-        for p in body_elem.find_all('p'):
-            text = p.get_text().strip()
-            if text:
-                paragraphs.append(text)
-        body_text = '\n\n'.join(paragraphs)
-    
-    full_text_parts = []
-    if category:
-        full_text_parts.append(category)
-    if title:
-        full_text_parts.append(title)
-    if date:
-        full_text_parts.append(date)
-    if body_text:
-        full_text_parts.append(body_text)
-    
-    return '\n'.join(full_text_parts)
-
-
-def extract_text(url, headers):
-    response = requests.get(url, headers=headers)
-    if response.status_code != 200:
-        return None
-    soup = BeautifulSoup(response.content, 'html.parser')
-    return extract_clean_text(soup)
-
-
-def scrape_text(prefix, num):
-    """Scrape Treasury press release"""
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    }
-
-    base_url = "https://home.treasury.gov/news/press-releases/"
-    alt_base_url = "https://home.treasury.gov/news/press-release/"
-
-    url = f"{base_url}{prefix}{num:04d}"
-    text_content = extract_text(url, headers)
-
-    if not text_content:
-        url = f"{alt_base_url}{prefix}{num:04d}"
-        text_content = extract_text(url, headers)
-
-    if not text_content and len(str(abs(num))) == 3:
-        url = f"{base_url}{prefix}{num:03d}"
-        text_content = extract_text(url, headers)
-        if not text_content:
-            url = f"{alt_base_url}{prefix}{num:03d}"
-            text_content = extract_text(url, headers)
-
-    if not text_content:
-        return None, None
-
-    release_date = re.search(r'(\b\w+\s+\d{1,2},\s+\d{4})(?=\s*\(Archived Content\))', text_content)
-    if not release_date:
-        early_text = text_content[:1000]
-        release_date = re.search(r'(\b\w+\s+\d{1,2},\s+\d{4})', early_text)
-
-    release_date = release_date.group(1) if release_date else None
-    if release_date is None:
-        return None, None
-
-    return text_content, release_date
-
-
 def treasury_press_release_scraper(start_date, end_date, step=1):
     
     secretary_eras = [
-        ("jl", 2253, 2450),
-        ("jl", 2550, 2700),
-        ("jl", 9700, 9800),
-        ("jl", 9950, 10100),
-        ("jl", 40, 620),
         ("sm", 1, 1240),
         ("jy", 1, 2800),
+        ("sb", 1, 400),
     ]
 
     statements_data = []
@@ -295,46 +246,63 @@ def run_treasury_fiscal_analysis(start_date, end_date, labeled_examples, step=1,
 
 if __name__ == "__main__":
     
+
     labeled_examples = {
-        'expansionary': [
-            """The Treasury Department today announced the rapid deployment of emergency fiscal support to stabilize households, workers, and businesses. These measures are designed to inject liquidity into the economy, preserve employment, and prevent a deeper contraction during the ongoing crisis.""",
+        "expansionary": [
+            # Spending / stimulus / support
+            "We will increase federal investment to accelerate economic growth, expand infrastructure spending, and support job creation.",
+            "The Administration will provide additional fiscal support to strengthen demand, boost employment, and speed the recovery.",
+            "We are committed to expanding targeted relief for households and small businesses to sustain consumption and prevent layoffs.",
+            "We will use federal resources to stabilize the economy by increasing spending where it has the highest multiplier effects.",
+            "This package increases federal outlays to support aggregate demand and reduce economic slack.",
 
-            """In coordination with Congress, Treasury is implementing large-scale fiscal relief to support aggregate demand and ensure continued access to credit markets. These actions are intended to sustain economic activity and accelerate recovery.""",
+            # Tax cuts / credits / rebates
+            "We will cut taxes for middle-class families to raise disposable income and strengthen consumer spending.",
+            "We will expand refundable tax credits to deliver immediate support to working families and increase purchasing power.",
+            "We are proposing tax relief that will increase after-tax income and encourage near-term spending and investment.",
+            "The plan accelerates tax refunds and provides temporary tax reductions to support demand.",
+            "We will implement temporary tax incentives to increase private investment and expand hiring.",
 
-            """The Administration is committed to using the full capacity of federal fiscal policy to support economic growth, expand public investment, and strengthen the resilience of the U.S. economy through targeted spending initiatives.""",
+            # Deficit tolerance when economy is weak
+            "In the near term, deficit-financed support is appropriate to strengthen the economy and reduce unemployment.",
+            "We will prioritize growth and jobs even if it requires higher short-term deficits to avoid a deeper downturn.",
+            "Fiscal policy should lean against the downturn with temporary deficit spending to support recovery.",
 
-            """Treasury will continue to support expansionary fiscal measures that provide direct assistance to families, state and local governments, and small businesses to mitigate economic headwinds and promote broad-based recovery.""",
-
-            """This legislation authorizes significant increases in federal outlays to address infrastructure needs, public health investments, and workforce support, reinforcing near-term demand and long-term productive capacity.""",
-
-            """The Department supports fiscal actions that increase government spending during periods of economic slack to counteract private sector retrenchment and stabilize employment.""",
-
-            """Treasury’s fiscal strategy emphasizes accommodative budgetary policy to sustain growth, reduce unemployment, and prevent deflationary pressures from taking hold in the broader economy.""",
-
-            """The proposed fiscal package reflects an expansionary stance aimed at boosting consumption, supporting investment, and ensuring that the recovery remains durable and inclusive."""
+            # Countercyclical framing
+            "We will deploy countercyclical fiscal measures to cushion the economy and support a faster return to full employment.",
+            "Additional public investment now will raise output and employment while interest rates remain low.",
         ],
-        'contractionary': [
-            """The Treasury Department emphasizes the importance of fiscal discipline and long-term debt sustainability, including measures to restrain discretionary spending and reduce structural deficits.""",
 
-            """This agreement reflects a commitment to fiscal consolidation through spending caps, entitlement reform, and deficit reduction to ensure confidence in U.S. public finances.""",
+        "contractionary": [
+            # Deficit / debt reduction
+            "We are committed to reducing the deficit and putting the debt on a sustainable path through spending restraint and reforms.",
+            "Fiscal consolidation is necessary to strengthen long-run sustainability by lowering deficits and slowing debt growth.",
+            "We will implement measures to bring spending in line with revenues and reduce borrowing needs.",
+            "We must take steps to reduce the federal deficit by restraining outlays and improving budget discipline.",
+            "The plan reduces projected deficits through a combination of spending cuts and revenue measures.",
 
-            """Treasury supports policies that reduce federal borrowing and place the budget on a sustainable path by limiting expenditure growth and enhancing revenue adequacy.""",
+            # Spending cuts / caps / sequestration-like language
+            "We will reduce federal spending growth by enforcing budget caps and limiting discretionary outlays.",
+            "This agreement restrains discretionary spending to achieve meaningful deficit reduction over the next decade.",
+            "We are proposing targeted spending reductions to improve fiscal sustainability and reduce the size of government borrowing.",
+            "We will phase down temporary programs and reduce federal expenditures as the economy strengthens.",
 
-            """The Administration is focused on restoring fiscal balance by constraining outlays and addressing long-term obligations that pose risks to economic stability.""",
+            # Tax increases / base broadening / enforcement framed as deficit reduction
+            "We will raise revenues to reduce deficits by closing loopholes and broadening the tax base.",
+            "Revenue measures are necessary to reduce the deficit and stabilize debt as a share of the economy.",
+            "We will increase compliance and enforcement to raise revenues and support deficit reduction goals.",
 
-            """This framework prioritizes deficit reduction and debt stabilization, recognizing that excessive fiscal expansion could undermine market confidence and long-term growth.""",
-
-            """Treasury endorses a measured fiscal approach that avoids further stimulus and instead emphasizes budgetary restraint to contain inflationary and debt-related risks.""",
-
-            """The Department supports fiscal reforms that slow the growth of federal spending and reduce reliance on deficit financing over the medium term.""",
-
-            """This legislation advances fiscal responsibility by enforcing spending limits and promoting a gradual return to primary budget balance."""
-        ]
+            # Austerity / tightening framing
+            "With the economy expanding, we should pivot toward deficit reduction and rebuild fiscal space for future shocks.",
+            "We must take difficult steps now to restrain spending and reduce deficits to support long-run growth.",
+            "Restoring fiscal sustainability requires near-term restraint and structural reforms to entitlement spending.",
+        ],
     }
 
+
     sentiment_df = run_treasury_fiscal_analysis(
-        start_date='2014-01-01',
-        end_date='2024-12-31',
+        start_date='2017-01-01',
+        end_date='2025-12-31',
         labeled_examples=labeled_examples,
         step=20,
         plot=True
