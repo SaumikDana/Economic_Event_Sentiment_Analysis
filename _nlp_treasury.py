@@ -1,6 +1,8 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import traceback
+import json
+from datetime import datetime
 
 from _embeddings import (
     create_document_embeddings, 
@@ -62,52 +64,50 @@ def get_stance_label(score, threshold):
     else:
         return 'neutral'
 
-
-def analyze_treasury_statements(statements_df, labeled_examples, threshold, learn=True):
-    """Treasury fiscal sentiment analysis using labeled examples
-    
-    Args:
-        statements_df: DataFrame with columns ['date', 'statement_text']
-        labeled_examples: Dict with keys 'expansionary' and 'contractionary', 
-                         each containing list of labeled Treasury statements
-        threshold: Threshold for stance classification
-    """
-
+def analyze_treasury_statements(
+    statements_df,
+    labeled_examples,
+    threshold,
+    learn_threshold,   # NEW: stricter gate for self-training
+    learn=True,
+):
     if statements_df.empty:
         return pd.DataFrame()
-    
+
     if labeled_examples is None:
         raise ValueError("Must provide labeled_examples with 'expansionary' and 'contractionary' keys")
-    
+
     if 'expansionary' not in labeled_examples or 'contractionary' not in labeled_examples:
         raise ValueError("labeled_examples must have 'expansionary' and 'contractionary' keys")
-    
+
+    # Default: learn at same strictness as classification unless specified
+    if learn_threshold is None:
+        learn_threshold = threshold
+
     print(f"Analyzing {len(statements_df)} Treasury statements...")
-    
+
     statements_df = statements_df.reset_index(drop=True)
 
     # Extract valid texts
     texts = []
     valid_indices = []
-    
     for i, row in statements_df.iterrows():
         text = row.get('statement_text', '')
         if isinstance(text, str) and len(text.strip()) > 50:
             texts.append(text)
             valid_indices.append(i)
-    
+
     if not texts:
         print("❌ No valid text content found")
         return pd.DataFrame()
-    
 
     try:
         # 1) Embed docs ONCE
-        print(f'Embed Docs ...')
+        print("Embed Docs ...")
         document_embeddings, model, processed_texts = create_document_embeddings(texts)
 
         # 2) Build initial axis from current labeled examples
-        print(f'Build Axis ...')
+        print("Build Axis ...")
         axis = create_policy_axis(
             model,
             labeled_examples['expansionary'],
@@ -115,7 +115,7 @@ def analyze_treasury_statements(statements_df, labeled_examples, threshold, lear
         )
 
         # 3) First scoring pass
-        print(f'Get Scores ...')
+        print("Get Scores ...")
         scores_v1 = calculate_sentiment_scores(document_embeddings, axis)
 
         # 4) First pass results + learning
@@ -129,24 +129,30 @@ def analyze_treasury_statements(statements_df, labeled_examples, threshold, lear
 
             row = statements_df.iloc[valid_idx]
             score = float(scores_v1[i])
+
+            # Classification stance (for output)
             stance = get_stance_label(score, threshold)
+
             date = row.get('date')
             text = row.get('statement_text', '')
 
-            # Learn from confident non-neutral
-            if learn and stance in ("expansionary", "contractionary"):
-                before = len(labeled_examples[stance])
-                print(f'Update labeled examples {date}...')
-                labeled_examples = integrate_new_labeled_examples(
-                    labeled_examples=labeled_examples,
-                    new_text=text,
-                    stance=stance,
-                    model=model,
-                )
-                after = len(labeled_examples[stance])
-                if after > before:
-                    print(f"Added {stance} example {date} (now {after})")
-                    learned_any = True
+            # Learning stance (stricter gate)
+            if learn:
+                learn_stance = get_stance_label(score, learn_threshold)
+                if learn_stance in ("expansionary", "contractionary"):
+                    before = len(labeled_examples[learn_stance])
+
+                    labeled_examples = integrate_new_labeled_examples(
+                        labeled_examples=labeled_examples,
+                        new_text=text,
+                        stance=learn_stance,
+                        model=model,
+                    )
+
+                    after = len(labeled_examples[learn_stance])
+                    if after > before:
+                        print(f"Added {learn_stance} example {date} (now {after})")
+                        learned_any = True
 
             # store v1 temporarily (will be overwritten if we do pass 2)
             results.append({
@@ -157,7 +163,7 @@ def analyze_treasury_statements(statements_df, labeled_examples, threshold, lear
 
         # 5) If learning changed the example bank, rebuild axis ONCE and rescore
         if learn and learned_any:
-            print(f'Update axis...')
+            print("Update axis...")
             axis = create_policy_axis(
                 model,
                 labeled_examples['expansionary'],
@@ -168,13 +174,12 @@ def analyze_treasury_statements(statements_df, labeled_examples, threshold, lear
             # overwrite scores/stances with v2 using same ordering
             for j in range(min(len(scores_v2), len(results))):
                 score2 = float(scores_v2[j])
-                stance2 = get_stance_label(score2, threshold)
                 results[j]['sentiment_score'] = score2
-                results[j]['stance'] = stance2
+                results[j]['stance'] = get_stance_label(score2, threshold)
 
         results_df = pd.DataFrame(results)
 
-        print(f"\n✓ Analysis complete:")
+        print(f"\n✓ Analysis complete (threshold={threshold}, learn_threshold={learn_threshold}):")
         print(f"  Expansionary: {(results_df['stance'] == 'expansionary').sum()}")
         print(f"  Neutral: {(results_df['stance'] == 'neutral').sum()}")
         print(f"  Contractionary: {(results_df['stance'] == 'contractionary').sum()}")
@@ -184,22 +189,23 @@ def analyze_treasury_statements(statements_df, labeled_examples, threshold, lear
             print(f"  expansionary: {len(labeled_examples.get('expansionary', []))}")
             print(f"  contractionary: {len(labeled_examples.get('contractionary', []))}")
 
-        return results_df
+        return results_df, labeled_examples
 
     except Exception as e:
         print(f"❌ Analysis failed: {e}")
         traceback.print_exc()
-        return pd.DataFrame()
+        return pd.DataFrame(), {}
 
 
-def analyze_all_statements(statements_df, labeled_examples, threshold, plot=False):
+
+def analyze_all_statements(statements_df, labeled_examples, threshold, learn_threshold, plot=False):
     """Main entry point for sentiment analysis"""
 
     print("\n" + "="*80)
     print("TREASURY FISCAL SENTIMENT ANALYSIS")
     print("="*80)
 
-    results_df = analyze_treasury_statements(statements_df, labeled_examples, threshold)
+    results_df, labeled_examples = analyze_treasury_statements(statements_df, labeled_examples, threshold, learn_threshold)
 
     if not results_df.empty:
         results_df.set_index('date', inplace=True)
@@ -208,7 +214,7 @@ def analyze_all_statements(statements_df, labeled_examples, threshold, plot=Fals
             plot_sentiment(results_df)
             plot_sentiment_score(results_df, threshold)
 
-    return results_df
+    return results_df, labeled_examples
 
 
 def treasury_press_release_scraper(start_date, end_date, step=1):
@@ -237,12 +243,12 @@ def treasury_press_release_scraper(start_date, end_date, step=1):
     return filtered_df
 
 
-def run_treasury_fiscal_analysis(start_date, end_date, labeled_examples, step=1, threshold=1.0, plot=False):
+def run_treasury_fiscal_analysis(start_date, end_date, labeled_examples, step=1, threshold=1.0, learn_threshold=1.5, plot=False):
 
     statements_df = treasury_press_release_scraper(start_date, end_date, step=step)
-    sentiment_df = analyze_all_statements(statements_df, labeled_examples, threshold, plot=plot)
+    sentiment_df, labeled_examples = analyze_all_statements(statements_df, labeled_examples, threshold, learn_threshold, plot=plot)
 
-    return sentiment_df
+    return sentiment_df, labeled_examples
 
 
 if __name__ == "__main__":
@@ -301,11 +307,21 @@ if __name__ == "__main__":
     }
 
 
-    sentiment_df = run_treasury_fiscal_analysis(
+    sentiment_df, labeled_examples = run_treasury_fiscal_analysis(
         start_date='2017-01-01',
         end_date='2025-12-31',
         labeled_examples=labeled_examples,
         step=20,
         threshold=1.0,
+        learn_threshold=1.5,
         plot=True
     )
+
+    # --- Save final labeled examples to JSON ---
+    ts = datetime.now().strftime("%Y%m%d")
+    out_path = f"labeled_examples_final_{ts}.json"
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(labeled_examples, f, ensure_ascii=False, indent=2)
+
+    print(f"\n✓ Saved final labeled_examples to: {out_path}")
