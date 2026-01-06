@@ -33,7 +33,7 @@ def plot_sentiment(df):
     plt.show()
 
 
-def plot_sentiment_score(df, threshold=0.25):
+def plot_sentiment_score(df, threshold):
     df_sorted = df.sort_index()
     df_sorted.index = pd.to_datetime(df_sorted.index)
     
@@ -53,7 +53,7 @@ def plot_sentiment_score(df, threshold=0.25):
     plt.show()
 
 
-def get_stance_label(score, threshold=0.25):
+def get_stance_label(score, threshold):
     """Convert score to stance"""
     if score > threshold:
         return 'expansionary'
@@ -63,7 +63,7 @@ def get_stance_label(score, threshold=0.25):
         return 'neutral'
 
 
-def analyze_treasury_statements(statements_df, labeled_examples, threshold=0.25, learn=True):
+def analyze_treasury_statements(statements_df, labeled_examples, threshold, learn=True):
     """Treasury fiscal sentiment analysis using labeled examples
     
     Args:
@@ -129,7 +129,7 @@ def analyze_treasury_statements(statements_df, labeled_examples, threshold=0.25,
 
             row = statements_df.iloc[valid_idx]
             score = float(scores_v1[i])
-            stance = get_stance_label(score, threshold=threshold)
+            stance = get_stance_label(score, threshold)
             date = row.get('date')
             text = row.get('statement_text', '')
 
@@ -144,7 +144,8 @@ def analyze_treasury_statements(statements_df, labeled_examples, threshold=0.25,
                     model=model,
                 )
                 after = len(labeled_examples[stance])
-                if after != before:
+                if after > before:
+                    print(f"Added {stance} example {date} (now {after})")
                     learned_any = True
 
             # store v1 temporarily (will be overwritten if we do pass 2)
@@ -167,7 +168,7 @@ def analyze_treasury_statements(statements_df, labeled_examples, threshold=0.25,
             # overwrite scores/stances with v2 using same ordering
             for j in range(min(len(scores_v2), len(results))):
                 score2 = float(scores_v2[j])
-                stance2 = get_stance_label(score2, threshold=threshold)
+                stance2 = get_stance_label(score2, threshold)
                 results[j]['sentiment_score'] = score2
                 results[j]['stance'] = stance2
 
@@ -191,21 +192,21 @@ def analyze_treasury_statements(statements_df, labeled_examples, threshold=0.25,
         return pd.DataFrame()
 
 
-def analyze_all_statements(statements_df, labeled_examples, threshold=0.25, plot=False):
+def analyze_all_statements(statements_df, labeled_examples, threshold, plot=False):
     """Main entry point for sentiment analysis"""
 
     print("\n" + "="*80)
     print("TREASURY FISCAL SENTIMENT ANALYSIS")
     print("="*80)
 
-    results_df = analyze_treasury_statements(statements_df, labeled_examples, threshold=threshold)
+    results_df = analyze_treasury_statements(statements_df, labeled_examples, threshold)
 
     if not results_df.empty:
         results_df.set_index('date', inplace=True)
 
         if plot:
             plot_sentiment(results_df)
-            plot_sentiment_score(results_df, threshold=threshold)
+            plot_sentiment_score(results_df, threshold)
 
     return results_df
 
@@ -236,10 +237,10 @@ def treasury_press_release_scraper(start_date, end_date, step=1):
     return filtered_df
 
 
-def run_treasury_fiscal_analysis(start_date, end_date, labeled_examples, step=1, plot=False):
+def run_treasury_fiscal_analysis(start_date, end_date, labeled_examples, step=1, threshold=1.0, plot=False):
 
     statements_df = treasury_press_release_scraper(start_date, end_date, step=step)
-    sentiment_df = analyze_all_statements(statements_df, labeled_examples, plot=plot)
+    sentiment_df = analyze_all_statements(statements_df, labeled_examples, threshold, plot=plot)
 
     return sentiment_df
 
@@ -305,5 +306,6 @@ if __name__ == "__main__":
         end_date='2025-12-31',
         labeled_examples=labeled_examples,
         step=20,
+        threshold=1.0,
         plot=True
     )
