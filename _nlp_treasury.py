@@ -9,7 +9,8 @@ from _embeddings import (
     calculate_sentiment_scores,
     create_policy_axis,
     integrate_new_labeled_examples,
-    scrape_text
+    scrape_text,
+    is_pure_auction_logistics_v2
 )
 
 
@@ -139,7 +140,8 @@ def analyze_treasury_statements(
             # Learning stance (stricter gate)
             if learn:
                 learn_stance = get_stance_label(score, learn_threshold)
-                if learn_stance in ("expansionary", "contractionary"):
+                if learn_stance in ("expansionary", "contractionary") and not is_pure_auction_logistics_v2(text):
+
                     before = len(labeled_examples[learn_stance])
 
                     labeled_examples = integrate_new_labeled_examples(

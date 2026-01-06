@@ -254,3 +254,58 @@ def scrape_text(prefix, num):
 
     return text_content, release_date
 
+
+
+AUCTION_KEYWORDS = {
+    "auction", "reopening", "refund", "refunding", "issuance",
+    "treasury will auction", "competitive bids", "noncompetitive",
+    "cusip", "settlement date", "issue date", "maturity",
+    "bill", "note", "bond", "tips",
+    "offering amount", "offering sizes",
+    "announces the auction", "auction results",
+    "when-issued", "wi",
+    "primary dealers", "federal reserve bank of new york",
+}
+
+FISCAL_STANCE_KEYWORDS = {
+    # spending / stimulus
+    "spending", "outlays", "investment", "infrastructure",
+    "support households", "support businesses", "stimulus",
+    "relief", "aid", "assistance",
+
+    # taxes
+    "tax", "taxes", "tax relief", "tax cut", "tax increase",
+    "credits", "rebate",
+
+    # deficit / debt framing
+    "deficit", "deficits", "debt", "fiscal",
+    "budget", "borrowing", "sustainability",
+    "fiscal space", "austerity", "consolidation",
+
+    # macro intent
+    "economic growth", "employment", "jobs", "demand",
+    "inflation", "countercyclical", "recovery",
+}
+
+def is_pure_auction_logistics_v2(text: str) -> bool:
+    """
+    Return True if text is operational debt-auction content
+    with no fiscal stance language.
+    """
+    if not isinstance(text, str):
+        return True
+
+    t = text.lower()
+
+    # Count keyword hits
+    auction_hits = sum(1 for kw in AUCTION_KEYWORDS if kw in t)
+    fiscal_hits = sum(1 for kw in FISCAL_STANCE_KEYWORDS if kw in t)
+
+    # Heuristics:
+    # - At least some auction language
+    # - Zero fiscal stance language
+    # - Mostly operational length / structure
+    return (
+        auction_hits >= 2 and
+        fiscal_hits == 0
+    )
