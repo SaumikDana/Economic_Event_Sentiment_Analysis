@@ -313,7 +313,7 @@ if __name__ == "__main__":
         start_date='2017-01-01',
         end_date='2025-12-31',
         labeled_examples=labeled_examples,
-        step=20,
+        step=10,
         threshold=1.0,
         learn_threshold=1.5,
         plot=True
