@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import traceback
 import json
 from datetime import datetime
-
+from copy import deepcopy
 from _embeddings import (
     create_document_embeddings, 
     calculate_sentiment_scores,
@@ -123,6 +123,9 @@ def analyze_treasury_statements(
         results = []
         learned_any = False
 
+        # Keep a copy
+        old_labeled_examples = deepcopy(labeled_examples)
+
         for i in range(min(len(scores_v1), len(valid_indices))):
             valid_idx = valid_indices[i]
             if valid_idx >= len(statements_df):
@@ -162,6 +165,14 @@ def analyze_treasury_statements(
                 'sentiment_score': score,
                 'stance': stance
             })
+
+        # Pop off old entries from labeled_examples
+        for ex in old_labeled_examples['expansionary']:
+            if ex in labeled_examples['expansionary']:
+                labeled_examples['expansionary'].remove(ex)
+        for ex in old_labeled_examples['contractionary']:
+            if ex in labeled_examples['contractionary']:
+                labeled_examples['contractionary'].remove(ex)
 
         # 5) If learning changed the example bank, rebuild axis ONCE and rescore
         if learn and learned_any:
