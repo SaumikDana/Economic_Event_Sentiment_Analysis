@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 import traceback
 from copy import deepcopy
 import pandas as pd
+import requests
+from bs4 import BeautifulSoup
 
 
 def calculate_sentiment_scores(document_embeddings, axis):
@@ -168,9 +170,6 @@ def integrate_new_labeled_examples(
 
     return labeled_examples
 
-
-import requests
-from bs4 import BeautifulSoup
 
 def extract_clean_text(soup):
     """Extract clean text from Treasury page"""
