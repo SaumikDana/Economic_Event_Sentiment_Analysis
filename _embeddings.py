@@ -3,6 +3,10 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler
 import re
 from sklearn.metrics.pairwise import cosine_similarity
+import matplotlib.pyplot as plt
+import traceback
+from copy import deepcopy
+import pandas as pd
 
 
 def calculate_sentiment_scores(document_embeddings, axis):
@@ -309,3 +313,200 @@ def is_pure_auction_logistics_v2(text: str) -> bool:
         auction_hits >= 2 and
         fiscal_hits == 0
     )
+
+
+def plot_sentiment(df):
+    df_sorted = df.sort_index()
+    df_sorted.index = pd.to_datetime(df_sorted.index)
+    
+    plt.figure(figsize=(14, 9))
+    colors = {'contractionary': 'red', 'neutral': 'gray', 'expansionary': 'green'}
+    
+    for i, (date, sentiment) in enumerate(zip(df_sorted.index, df_sorted['stance'])):
+        plt.scatter(date, sentiment, c=colors[sentiment], alpha=0.7, s=10)
+    
+    for sentiment, color in colors.items():
+        plt.scatter([], [], c=color, label=sentiment)
+    
+    plt.title('Treasury Sentiment Over Time')
+    plt.xlabel('Date')
+    plt.legend()
+    plt.xticks(rotation=45, fontsize=10)
+    plt.yticks([])
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_sentiment_score(df, threshold):
+    df_sorted = df.sort_index()
+    df_sorted.index = pd.to_datetime(df_sorted.index)
+    
+    plt.figure(figsize=(14, 9))
+    
+    plt.plot(df_sorted.index, df_sorted['sentiment_score'], 'b.-', linewidth=1, alpha=0.7)
+    plt.axhline(y=threshold, color='black', linestyle='--', alpha=0.5)
+    plt.axhline(y=-threshold, color='black', linestyle='--', alpha=0.5)
+    plt.axhline(y=0, color='gray', linestyle='-', alpha=0.3)
+
+    plt.title('Treasury Sentiment Score Over Time')
+    plt.xlabel('Date')
+    plt.ylabel('Sentiment Score')
+    plt.xticks(rotation=45, fontsize=10)
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+
+def get_stance_label(score, threshold):
+    """Convert score to stance"""
+    if score > threshold:
+        return 'expansionary'
+    elif score < -threshold:
+        return 'contractionary'
+    else:
+        return 'neutral'
+
+def analyze_treasury_statements(
+    statements_df,
+    labeled_examples,
+    threshold,
+    learn_threshold,   # NEW: stricter gate for self-training
+    learn=True,
+):
+    if statements_df.empty:
+        return pd.DataFrame()
+
+    if labeled_examples is None:
+        raise ValueError("Must provide labeled_examples with 'expansionary' and 'contractionary' keys")
+
+    if 'expansionary' not in labeled_examples or 'contractionary' not in labeled_examples:
+        raise ValueError("labeled_examples must have 'expansionary' and 'contractionary' keys")
+
+    # Default: learn at same strictness as classification unless specified
+    if learn_threshold is None:
+        learn_threshold = threshold
+
+    print(f"Analyzing {len(statements_df)} Treasury statements...")
+
+    statements_df = statements_df.reset_index(drop=True)
+
+    # Extract valid texts
+    texts = []
+    valid_indices = []
+    for i, row in statements_df.iterrows():
+        text = row.get('statement_text', '')
+        if isinstance(text, str) and len(text.strip()) > 50:
+            texts.append(text)
+            valid_indices.append(i)
+
+    if not texts:
+        print("❌ No valid text content found")
+        return pd.DataFrame()
+
+    try:
+        # 1) Embed docs ONCE
+        print("Embed Docs ...")
+        document_embeddings, model, _ = create_document_embeddings(texts)
+
+        # 2) Build initial axis from current labeled examples
+        print("Build Axis ...")
+        axis = create_policy_axis(
+            model,
+            labeled_examples['expansionary'],
+            labeled_examples['contractionary']
+        )
+
+        # 3) First scoring pass
+        print("Get Scores ...")
+        scores_v1 = calculate_sentiment_scores(document_embeddings, axis)
+
+        # 4) First pass results + learning
+        results = []
+        learned_any = False
+
+        # Keep a copy
+        old_labeled_examples = deepcopy(labeled_examples)
+
+        for i in range(min(len(scores_v1), len(valid_indices))):
+            valid_idx = valid_indices[i]
+            if valid_idx >= len(statements_df):
+                continue
+
+            row = statements_df.iloc[valid_idx]
+            score = float(scores_v1[i])
+
+            # Classification stance (for output)
+            stance = get_stance_label(score, threshold)
+
+            date = row.get('date')
+            text = row.get('statement_text', '')
+
+            # Learning stance (stricter gate)
+            if learn:
+                learn_stance = get_stance_label(score, learn_threshold)
+                if learn_stance in ("expansionary", "contractionary") and not is_pure_auction_logistics_v2(text):
+
+                    before = len(labeled_examples[learn_stance])
+
+                    labeled_examples = integrate_new_labeled_examples(
+                        labeled_examples=labeled_examples,
+                        new_text=text,
+                        stance=learn_stance,
+                        model=model,
+                    )
+
+                    after = len(labeled_examples[learn_stance])
+                    if after > before:
+                        print(f"Added {learn_stance} example {date} (now {after})")
+                        learned_any = True
+
+            # store v1 temporarily (will be overwritten if we do pass 2)
+            results.append({
+                'date': date,
+                'sentiment_score': score,
+                'stance': stance
+            })
+
+        # Pop off old entries from labeled_examples
+        for ex in old_labeled_examples['expansionary']:
+            if ex in labeled_examples['expansionary']:
+                labeled_examples['expansionary'].remove(ex)
+        for ex in old_labeled_examples['contractionary']:
+            if ex in labeled_examples['contractionary']:
+                labeled_examples['contractionary'].remove(ex)
+
+        # 5) If learning changed the example bank, rebuild axis ONCE and rescore
+        if learn and learned_any:
+            print("Update axis...")
+            axis = create_policy_axis(
+                model,
+                labeled_examples['expansionary'],
+                labeled_examples['contractionary']
+            )
+            scores_v2 = calculate_sentiment_scores(document_embeddings, axis)
+
+            # overwrite scores/stances with v2 using same ordering
+            for j in range(min(len(scores_v2), len(results))):
+                score2 = float(scores_v2[j])
+                results[j]['sentiment_score'] = score2
+                results[j]['stance'] = get_stance_label(score2, threshold)
+
+        results_df = pd.DataFrame(results)
+
+        print(f"\n✓ Analysis complete (threshold={threshold}, learn_threshold={learn_threshold}):")
+        print(f"  Expansionary: {(results_df['stance'] == 'expansionary').sum()}")
+        print(f"  Neutral: {(results_df['stance'] == 'neutral').sum()}")
+        print(f"  Contractionary: {(results_df['stance'] == 'contractionary').sum()}")
+
+        if learn:
+            print("\n✓ Updated labeled_examples (after pruning):")
+            print(f"  expansionary: {len(labeled_examples.get('expansionary', []))}")
+            print(f"  contractionary: {len(labeled_examples.get('contractionary', []))}")
+
+        return results_df, labeled_examples
+
+    except Exception as e:
+        print(f"❌ Analysis failed: {e}")
+        traceback.print_exc()
+        return pd.DataFrame(), {}
+
